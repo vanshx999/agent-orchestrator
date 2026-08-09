@@ -24,17 +24,20 @@ import (
 )
 
 type fakeSessionService struct {
-	sessions        map[domain.SessionID]domain.Session
-	sent            string
-	cleanupProjects []domain.ProjectID
-	cleanupResult   []domain.SessionID
-	cleanupSkipped  []sessionsvc.CleanupSkipped
-	workspaceFiles  sessionsvc.WorkspaceFiles
-	workspaceFile   sessionsvc.WorkspaceFileDetail
-	spawnErr        error
-	claimErr        error
-	listPRErr       error
-	workspaceErr    error
+	sessions            map[domain.SessionID]domain.Session
+	sent                string
+	cleanupProjects     []domain.ProjectID
+	cleanupResult       []domain.SessionID
+	cleanupSkipped      []sessionsvc.CleanupSkipped
+	workspaceFiles      sessionsvc.WorkspaceFiles
+	workspaceFile       sessionsvc.WorkspaceFileDetail
+	spawnErr            error
+	claimErr            error
+	listPRErr           error
+	workspaceErr        error
+	terminalOutput      string
+	terminalOutputErr   error
+	terminalOutputLines int
 }
 
 func newFakeSessionService() *fakeSessionService {
@@ -246,6 +249,14 @@ func (f *fakeSessionService) GetWorkspaceFile(_ context.Context, id domain.Sessi
 	return sessionsvc.WorkspaceFileDetail{SessionID: id, Path: path}, nil
 }
 
+func (f *fakeSessionService) GetTerminalOutput(_ context.Context, _ domain.SessionID, lines int) (string, error) {
+	f.terminalOutputLines = lines
+	if f.terminalOutputErr != nil {
+		return "", f.terminalOutputErr
+	}
+	return f.terminalOutput, nil
+}
+
 func newSessionTestServer(t *testing.T, svc *fakeSessionService) *httptest.Server {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -399,6 +410,56 @@ func TestSessionsAPI_ListSpawnGetAndActions(t *testing.T) {
 	if status != http.StatusCreated {
 		t.Fatalf("orchestrator = %d, want 201; body=%s", status, body)
 	}
+}
+
+func TestSessionsAPI_GetTerminalOutput(t *testing.T) {
+	svc := newFakeSessionService()
+	svc.terminalOutput = "line1\nline2\n"
+	srv := newSessionTestServer(t, svc)
+
+	body, status, _ := doRequest(t, srv, "GET", "/api/v1/sessions/ao-1/terminal/output", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET terminal/output = %d, want 200; body=%s", status, body)
+	}
+	var out struct {
+		SessionID string `json:"sessionId"`
+		Text      string `json:"text"`
+	}
+	mustJSON(t, body, &out)
+	if out.Text != "line1\nline2\n" || out.SessionID != "ao-1" {
+		t.Fatalf("output = %#v", out)
+	}
+	if svc.terminalOutputLines != 0 {
+		t.Fatalf("lines default = %d, want 0 (backend default)", svc.terminalOutputLines)
+	}
+
+	body, status, _ = doRequest(t, srv, "GET", "/api/v1/sessions/ao-1/terminal/output?lines=42", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET terminal/output?lines=42 = %d, want 200; body=%s", status, body)
+	}
+	if svc.terminalOutputLines != 42 {
+		t.Fatalf("lines = %d, want 42", svc.terminalOutputLines)
+	}
+
+	body, status, _ = doRequest(t, srv, "GET", "/api/v1/sessions/ao-1/terminal/output?lines=abc", "")
+	if status != http.StatusBadRequest {
+		t.Fatalf("GET terminal/output?lines=abc = %d, want 400; body=%s", status, body)
+	}
+	assertErrorCode(t, body, status, http.StatusBadRequest, "INVALID_LINES")
+
+	svc.terminalOutputErr = apierr.NotFound("SESSION_NOT_FOUND", "Unknown session")
+	body, status, _ = doRequest(t, srv, "GET", "/api/v1/sessions/ao-1/terminal/output", "")
+	if status != http.StatusNotFound {
+		t.Fatalf("GET terminal/output (missing session) = %d, want 404; body=%s", status, body)
+	}
+}
+
+func TestSessionsAPI_GetTerminalOutputDefaultStubWithoutService(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := httptest.NewServer(httpd.NewRouterWithControl(config.Config{}, log, nil, httpd.APIDeps{}, httpd.ControlDeps{}))
+	t.Cleanup(srv.Close)
+	body, status, _ := doRequest(t, srv, "GET", "/api/v1/sessions/ao-1/terminal/output", "")
+	assertErrorCode(t, body, status, http.StatusNotImplemented, "NOT_IMPLEMENTED")
 }
 
 func TestSessionsAPI_PreviewDiscoversAndServesStaticIndex(t *testing.T) {

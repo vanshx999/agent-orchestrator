@@ -167,6 +167,7 @@ type fakeRuntime struct {
 	lastCfg            ports.RuntimeConfig
 	outputs            []string
 	outputCalls        int
+	lastOutputLines    int
 	outputErr          error
 	// aliveByHandle maps a RuntimeHandle.ID to its liveness; missing = false.
 	aliveByHandle map[string]bool
@@ -193,8 +194,9 @@ func (r *fakeRuntime) IsAlive(_ context.Context, handle ports.RuntimeHandle) (bo
 	}
 	return r.aliveByHandle[handle.ID], nil
 }
-func (r *fakeRuntime) GetOutput(_ context.Context, _ ports.RuntimeHandle, _ int) (string, error) {
+func (r *fakeRuntime) GetOutput(_ context.Context, _ ports.RuntimeHandle, lines int) (string, error) {
 	r.outputCalls++
+	r.lastOutputLines = lines
 	if r.outputErr != nil {
 		return "", r.outputErr
 	}
@@ -635,6 +637,59 @@ func seedTerminal(st *fakeStore, id domain.SessionID, meta domain.SessionMetadat
 }
 func mkLive(id domain.SessionID) domain.SessionRecord {
 	return domain.SessionRecord{ID: id, ProjectID: "mer", Metadata: domain.SessionMetadata{WorkspacePath: "/ws/" + string(id), RuntimeHandleID: "h1"}, Activity: domain.Activity{State: domain.ActivityActive}}
+}
+
+func TestGetTerminalOutputHappyPath(t *testing.T) {
+	m, st, rt, _ := newManager()
+	seedTerminal(st, "sess-1", domain.SessionMetadata{RuntimeHandleID: "h1"})
+	rt.outputs = []string{"line1\nline2\n"}
+	out, err := m.GetTerminalOutput(context.Background(), "sess-1", 0)
+	if err != nil {
+		t.Fatalf("GetTerminalOutput: %v", err)
+	}
+	if want := "line1\nline2\n"; out != want {
+		t.Fatalf("GetTerminalOutput = %q, want %q", out, want)
+	}
+	if rt.outputCalls != 1 {
+		t.Fatalf("GetOutput calls = %d, want 1", rt.outputCalls)
+	}
+}
+
+func TestGetTerminalOutputDefaultsLinesTo500(t *testing.T) {
+	m, st, rt, _ := newManager()
+	seedTerminal(st, "sess-1", domain.SessionMetadata{RuntimeHandleID: "h1"})
+	if _, err := m.GetTerminalOutput(context.Background(), "sess-1", 0); err != nil {
+		t.Fatalf("GetTerminalOutput: %v", err)
+	}
+	if rt.lastOutputLines != 500 {
+		t.Fatalf("GetOutput lines = %d, want default 500", rt.lastOutputLines)
+	}
+}
+
+func TestGetTerminalOutputClampsLinesToMax(t *testing.T) {
+	m, st, rt, _ := newManager()
+	seedTerminal(st, "sess-1", domain.SessionMetadata{RuntimeHandleID: "h1"})
+	if _, err := m.GetTerminalOutput(context.Background(), "sess-1", 1_000_000); err != nil {
+		t.Fatalf("GetTerminalOutput: %v", err)
+	}
+	if rt.lastOutputLines != 5000 {
+		t.Fatalf("GetOutput lines = %d, want max clamp 5000", rt.lastOutputLines)
+	}
+}
+
+func TestGetTerminalOutputUnknownSession(t *testing.T) {
+	m, _, _, _ := newManager()
+	if _, err := m.GetTerminalOutput(context.Background(), "nope", 10); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetTerminalOutput = %v, want ErrNotFound", err)
+	}
+}
+
+func TestGetTerminalOutputMissingRuntimeHandle(t *testing.T) {
+	m, st, _, _ := newManager()
+	seedTerminal(st, "sess-1", domain.SessionMetadata{})
+	if _, err := m.GetTerminalOutput(context.Background(), "sess-1", 10); !errors.Is(err, ErrIncompleteHandle) {
+		t.Fatalf("GetTerminalOutput = %v, want ErrIncompleteHandle", err)
+	}
 }
 
 func TestSpawn_ResolvesProjectConfig(t *testing.T) {

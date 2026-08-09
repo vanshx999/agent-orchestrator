@@ -44,6 +44,7 @@ type SessionService interface {
 	Rename(ctx context.Context, id domain.SessionID, displayName string) error
 	SetPreview(ctx context.Context, id domain.SessionID, previewURL string) (domain.Session, error)
 	Send(ctx context.Context, id domain.SessionID, message string) error
+	GetTerminalOutput(ctx context.Context, id domain.SessionID, lines int) (string, error)
 	ListPRSummaries(ctx context.Context, id domain.SessionID) ([]sessionsvc.PRSummary, error)
 	ClaimPR(ctx context.Context, id domain.SessionID, ref string, opts sessionsvc.ClaimPROptions) (sessionsvc.ClaimPRResult, error)
 	ListWorkspaceFiles(ctx context.Context, id domain.SessionID) (sessionsvc.WorkspaceFiles, error)
@@ -78,6 +79,7 @@ func (c *SessionsController) Register(r chi.Router) {
 	r.Get("/sessions/{sessionId}/preview/files/*", c.previewFile)
 	r.Get("/sessions/{sessionId}/workspace/files", c.listWorkspaceFiles)
 	r.Get("/sessions/{sessionId}/workspace/file", c.getWorkspaceFile)
+	r.Get("/sessions/{sessionId}/terminal/output", c.getTerminalOutput)
 	r.Get("/sessions/{sessionId}/pr", c.listPRs)
 	r.Post("/sessions/{sessionId}/pr/claim", c.claimPR)
 	r.Patch("/sessions/{sessionId}", c.rename)
@@ -319,6 +321,32 @@ func (c *SessionsController) getWorkspaceFile(w http.ResponseWriter, r *http.Req
 		return
 	}
 	envelope.WriteJSON(w, http.StatusOK, workspaceFileResponse(file))
+}
+
+// getTerminalOutput returns the last `lines` lines of the session pane's
+// captured terminal output as plain text. The desktop app uses it to copy an
+// entire pane's transcript (e.g. a long opencode run) that a single
+// drag-selection cannot span — see XtermTerminal's "Copy pane output" action.
+func (c *SessionsController) getTerminalOutput(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "GET", "/api/v1/sessions/{sessionId}/terminal/output")
+		return
+	}
+	lines := 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("lines")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_LINES", "lines must be a non-negative integer", nil)
+			return
+		}
+		lines = n
+	}
+	text, err := c.Svc.GetTerminalOutput(r.Context(), sessionID(r), lines)
+	if err != nil {
+		envelope.WriteError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, SessionTerminalOutputResponse{SessionID: sessionID(r), Text: text})
 }
 
 // setPreview persists the browser preview URL the desktop app opens for a

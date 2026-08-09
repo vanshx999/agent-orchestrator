@@ -52,6 +52,14 @@ export type XtermTerminalProps = {
 	 * on every platform (see the wheel handler), fixing it under a mux too.
 	 */
 	paneScrollsByKeyboard?: boolean;
+	/**
+	 * Show the "Copy pane output" context-menu action. The owner enables it only
+	 * when the pane maps to a session whose runtime scrollback the daemon can
+	 * capture (a session-attached pane — not a reviewer or standalone shell).
+	 */
+	canCopyPaneOutput?: boolean;
+	/** Capture the pane's output via the daemon and copy it to the clipboard. */
+	onCopyPaneOutput?: () => void;
 	/** Terminal construction failed; the owner decides how to surface it. */
 	onError?: (error: unknown) => void;
 	/** Called after a terminal hyperlink is opened in the OS browser. */
@@ -753,6 +761,9 @@ export function XtermTerminal(props: XtermTerminalProps) {
 					</DropdownMenuItem>
 					<DropdownMenuItem onSelect={() => runContextMenuAction("paste")}>Paste</DropdownMenuItem>
 					<DropdownMenuItem onSelect={() => runContextMenuAction("selectAll")}>Select All</DropdownMenuItem>
+					{props.canCopyPaneOutput && (
+						<DropdownMenuItem onSelect={() => props.onCopyPaneOutput?.()}>Copy pane output</DropdownMenuItem>
+					)}
 					<DropdownMenuSeparator />
 					<DropdownMenuItem onSelect={() => runContextMenuAction("clear")}>Clear</DropdownMenuItem>
 				</DropdownMenuContent>

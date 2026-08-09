@@ -162,6 +162,8 @@ var schemaNames = map[string]string{
 	"ControllersListWorkspaceFilesResponse":       "ListWorkspaceFilesResponse",
 	"ControllersWorkspaceFileSummary":             "WorkspaceFileSummary",
 	"ControllersWorkspaceFileResponse":            "WorkspaceFileResponse",
+	"ControllersTerminalOutputQuery":              "TerminalOutputQuery",
+	"ControllersSessionTerminalOutputResponse":    "SessionTerminalOutputResponse",
 	"ControllersKillSessionResponse":              "KillSessionResponse",
 	"ControllersRollbackSessionResponse":          "RollbackSessionResponse",
 	"ControllersSendSessionMessageRequest":        "SendSessionMessageRequest",
@@ -813,6 +815,18 @@ func sessionOperations() []operation {
 			pathParams: []any{controllers.SessionIDParam{}, controllers.WorkspaceFileQuery{}},
 			resps: []respUnit{
 				{http.StatusOK, controllers.WorkspaceFileResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusInternalServerError, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
+		{
+			method: http.MethodGet, path: "/api/v1/sessions/{sessionId}/terminal/output", id: "getSessionTerminalOutput", tag: "sessions",
+			summary:    "Capture a session pane's terminal output as plain text",
+			pathParams: []any{controllers.SessionIDParam{}, controllers.TerminalOutputQuery{}},
+			resps: []respUnit{
+				{http.StatusOK, controllers.SessionTerminalOutputResponse{}},
 				{http.StatusBadRequest, envelope.APIError{}},
 				{http.StatusNotFound, envelope.APIError{}},
 				{http.StatusInternalServerError, envelope.APIError{}},

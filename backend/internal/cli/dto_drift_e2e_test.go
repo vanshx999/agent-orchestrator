@@ -115,6 +115,10 @@ func (f *fakeSessionService) GetWorkspaceFile(context.Context, domain.SessionID,
 	return sessionsvc.WorkspaceFileDetail{}, nil
 }
 
+func (f *fakeSessionService) GetTerminalOutput(context.Context, domain.SessionID, int) (string, error) {
+	return "", nil
+}
+
 type fakeAgentCatalog struct{}
 
 var _ controllers.AgentCatalog = (*fakeAgentCatalog)(nil)

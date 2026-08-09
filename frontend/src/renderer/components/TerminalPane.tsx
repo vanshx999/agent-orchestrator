@@ -5,7 +5,8 @@ import type { TerminalTarget } from "../types/terminal";
 import type { WorkspaceSession } from "../types/workspace";
 import type { Theme } from "../stores/ui-store";
 import { useTerminalSession, type AttachableTerminal, type TerminalSessionState } from "../hooks/useTerminalSession";
-import { apiClient } from "../lib/api-client";
+import { apiClient, apiErrorMessage } from "../lib/api-client";
+import { aoBridge } from "../lib/bridge";
 import { isLoopbackHostname } from "../lib/loopback";
 import { cn } from "../lib/utils";
 import { workspaceQueryKey } from "../hooks/useWorkspaceQuery";
@@ -219,6 +220,13 @@ function bannerText(state: TerminalSessionState, error?: string): string | undef
 	return undefined;
 }
 
+// Transient feedback for the "Copy pane output" context-menu action.
+function paneCopyBanner(state: "idle" | "copied" | "error"): string | undefined {
+	if (state === "copied") return "Copied pane output to clipboard";
+	if (state === "error") return "Could not copy pane output";
+	return undefined;
+}
+
 function AttachedTerminal({ session, theme, daemonReady, terminalTarget, fontSize }: TerminalPaneProps) {
 	const attachSession =
 		session && terminalTarget?.kind === "reviewer"
@@ -232,6 +240,8 @@ function AttachedTerminal({ session, theme, daemonReady, terminalTarget, fontSiz
 	const [isRestoring, setIsRestoring] = useState(false);
 	const [restoreError, setRestoreError] = useState<string | undefined>();
 	const [restoreUnavailable, setRestoreUnavailable] = useState(false);
+	const [copyOutputState, setCopyOutputState] = useState<"idle" | "copied" | "error">("idle");
+	const copyOutputTimerRef = useRef<number | null>(null);
 	const queryClient = useQueryClient();
 	const restoreSessionById = useRestoreSession();
 	// A shell pane has no session, so it hands the hook its handle directly
@@ -299,6 +309,34 @@ function AttachedTerminal({ session, theme, daemonReady, terminalTarget, fontSiz
 		}
 	}, [canRestoreSession, isRestoring, restoreSessionById, session?.id]);
 
+	// "Copy pane output" captures the session pane's scrollback via the daemon
+	// (GET /sessions/{id}/terminal/output → capture-pane) and puts it on the
+	// clipboard as plain text. This is the way to grab a long opencode run that a
+	// single drag-selection (one visible screen) can never span.
+	const copyPaneOutput = useCallback(() => {
+		if (!session?.id) return;
+		void (async () => {
+			try {
+				const { data, error } = await apiClient.GET("/api/v1/sessions/{sessionId}/terminal/output", {
+					params: { path: { sessionId: session.id } },
+				});
+				if (error) throw error;
+				await aoBridge.clipboard.writeText(data.text);
+				setCopyOutputState("copied");
+			} catch (error) {
+				console.warn("Unable to copy pane output", apiErrorMessage(error));
+				setCopyOutputState("error");
+			}
+			if (copyOutputTimerRef.current !== null) {
+				window.clearTimeout(copyOutputTimerRef.current);
+			}
+			copyOutputTimerRef.current = window.setTimeout(() => setCopyOutputState("idle"), 2500);
+		})();
+	}, [session?.id]);
+	useEffect(() => () => {
+		if (copyOutputTimerRef.current !== null) window.clearTimeout(copyOutputTimerRef.current);
+	}, []);
+
 	useEffect(() => {
 		if (!terminal) return;
 		// Reuse means the previous session's screen would linger; clear before
@@ -350,13 +388,31 @@ function AttachedTerminal({ session, theme, daemonReady, terminalTarget, fontSiz
 			<div className="relative min-h-0 flex-1">
 				<XtermTerminal
 					ariaLabel={terminalTarget?.kind === "shell" ? "Shell terminal" : "Session terminal"}
+					canCopyPaneOutput={Boolean(
+						session?.id &&
+							handleId &&
+							terminalTarget?.kind !== "reviewer" &&
+							terminalTarget?.kind !== "shell",
+					)}
 					fontSize={fontSize}
+					onCopyPaneOutput={copyPaneOutput}
 					onError={handleInitError}
 					onLinkOpen={handleLinkOpen}
 					onReady={handleReady}
 					paneScrollsByKeyboard={providerScrollsByKeyboard(provider)}
 					theme={theme}
 				/>
+				{paneCopyBanner(copyOutputState) && (
+					<div
+						className={`absolute inset-x-3 bottom-2 rounded-md border px-3 py-1.5 font-mono text-caption ${
+							copyOutputState === "error"
+								? "border-destructive/40 bg-destructive/10 text-destructive"
+								: "border-border bg-surface/95 text-muted-foreground"
+						}`}
+					>
+						{paneCopyBanner(copyOutputState)}
+					</div>
+				)}
 				{showEmptyState && (
 					<div className="absolute inset-0 grid place-items-center bg-terminal font-mono text-control">
 						<div className="text-center">

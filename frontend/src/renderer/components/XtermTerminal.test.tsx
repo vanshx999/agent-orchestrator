@@ -236,6 +236,23 @@ describe("XtermTerminal", () => {
 		expect(state.lastTerminal!.clear).toHaveBeenCalled();
 	});
 
+	it("shows Copy pane output only when enabled and triggers onCopyPaneOutput", async () => {
+		const onCopyPaneOutput = vi.fn();
+		const { container } = render(
+			<XtermTerminal theme="dark" canCopyPaneOutput onCopyPaneOutput={onCopyPaneOutput} />,
+		);
+		fireEvent.contextMenu(container.firstElementChild!);
+		fireEvent.click(await screen.findByText("Copy pane output"));
+		expect(onCopyPaneOutput).toHaveBeenCalledTimes(1);
+	});
+
+	it("omits Copy pane output when the pane is not output-copyable", async () => {
+		const { container } = render(<XtermTerminal theme="dark" />);
+		fireEvent.contextMenu(container.firstElementChild!);
+		await screen.findByText("Paste");
+		expect(screen.queryByText("Copy pane output")).not.toBeInTheDocument();
+	});
+
 	it("pastes from the context menu through the terminal paste path", async () => {
 		const onInput = vi.fn();
 		window.ao!.clipboard.readText = vi.fn().mockResolvedValue("menu\npaste");

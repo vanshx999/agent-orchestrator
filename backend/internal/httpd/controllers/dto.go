@@ -125,6 +125,21 @@ type WorkspaceFileQuery struct {
 	Path string `query:"path" description:"Session-worktree-relative file path."`
 }
 
+// TerminalOutputQuery is the query string accepted by GET
+// /api/v1/sessions/{sessionId}/terminal/output. Omitted lines means the
+// backend default (500); lines is clamped to a backend maximum (5000).
+type TerminalOutputQuery struct {
+	Lines int `query:"lines,omitempty" description:"Number of trailing capture-pane lines to return (default 500, max 5000)."`
+}
+
+// SessionTerminalOutputResponse is the body of GET
+// /api/v1/sessions/{sessionId}/terminal/output.
+type SessionTerminalOutputResponse struct {
+	SessionID domain.SessionID `json:"sessionId"`
+	// Text is the captured pane output with trailing blank lines trimmed.
+	Text string `json:"text"`
+}
+
 // SessionView is the session wire shape: the domain read model plus the
 // display-safe branch name and the session's attributed pull requests in the
 // curated SessionPRFacts shape. One session can own many PRs (e.g. a stack), so

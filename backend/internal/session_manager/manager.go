@@ -67,6 +67,15 @@ const (
 	EnvDataDir = "AO_DATA_DIR"
 )
 
+// maxTerminalCaptureLines caps how many lines a "copy pane output" request may
+// pull from the runtime. capture-pane/ring replay is bounded so a single
+// clipboard grab stays cheap regardless of scrollback history length.
+const maxTerminalCaptureLines = 5000
+
+// defaultTerminalCaptureLines is the number of lines captured when the caller
+// does not request a specific count.
+const defaultTerminalCaptureLines = 500
+
 // hookBinaryName is the executable name the workspace hook commands invoke:
 // every agent adapter installs a bare `ao hooks <agent> <event>`. The session
 // PATH pin (hookPATH) only works when the daemon's own executable carries this
@@ -1586,6 +1595,35 @@ func (m *Manager) Send(ctx context.Context, id domain.SessionID, message string)
 		m.confirmActive(ctx, m.messenger, id)
 	}
 	return nil
+}
+
+// GetTerminalOutput returns the last `lines` lines of the session pane's
+// captured output (tmux capture-pane / conpty ring buffer — see
+// ports.Runtime.GetOutput). It is the raw byte content of the live (or last
+// seen) terminal, which the desktop app copies verbatim when a user asks to
+// grab a pane's transcript. A session that never got a runtime handle
+// (seed/spawn-failed rows) returns ErrIncompleteHandle; an unknown session
+// returns ErrNotFound. `lines` is clamped to [1, maxTerminalCaptureLines].
+func (m *Manager) GetTerminalOutput(ctx context.Context, id domain.SessionID, lines int) (string, error) {
+	clamped := defaultTerminalCaptureLines
+	if lines > 0 {
+		clamped = min(lines, maxTerminalCaptureLines)
+	}
+	rec, ok, err := m.store.GetSession(ctx, id)
+	if err != nil {
+		return "", fmt.Errorf("terminal output %s: session: %w", id, err)
+	}
+	if !ok {
+		return "", fmt.Errorf("terminal output %s: %w", id, ErrNotFound)
+	}
+	if rec.Metadata.RuntimeHandleID == "" {
+		return "", fmt.Errorf("terminal output %s: %w", id, ErrIncompleteHandle)
+	}
+	output, err := m.runtime.GetOutput(ctx, runtimeHandle(rec.Metadata), clamped)
+	if err != nil {
+		return "", fmt.Errorf("terminal output %s: %w", id, err)
+	}
+	return output, nil
 }
 
 func (m *Manager) prepareOutboundMessage(ctx context.Context, id domain.SessionID, message string) (string, error) {

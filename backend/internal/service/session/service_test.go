@@ -345,21 +345,32 @@ func TestSessionRenameMissingSessionReturnsNotFound(t *testing.T) {
 // fakeCommander records Kill/Spawn calls so a test can assert the
 // clean-orchestrator ordering without wiring a real session engine.
 type fakeCommander struct {
-	killed          []domain.SessionID
-	retired         []domain.SessionID
-	sent            []domain.SessionID
-	cleanupProjects []domain.ProjectID
-	killErr         error
-	retireErr       error
-	sendErr         error
-	cleanupErr      error
-	spawnErr        error
-	spawnRecord     domain.SessionRecord
-	spawned         bool
-	spawnedCfg      ports.SpawnConfig
-	killsAtSpawn    int
-	restoreErr      error
-	restoreResult   sessionmanager.RestoreResult
+	killed           []domain.SessionID
+	retired          []domain.SessionID
+	sent             []domain.SessionID
+	cleanupProjects  []domain.ProjectID
+	killErr          error
+	retireErr        error
+	sendErr          error
+	cleanupErr       error
+	spawnErr         error
+	spawnRecord      domain.SessionRecord
+	spawned          bool
+	spawnedCfg       ports.SpawnConfig
+	killsAtSpawn     int
+	restoreErr       error
+	restoreResult    sessionmanager.RestoreResult
+	terminalOutput   string
+	terminalOutErr   error
+	terminalOutLines int
+}
+
+func (f *fakeCommander) GetTerminalOutput(_ context.Context, id domain.SessionID, lines int) (string, error) {
+	f.terminalOutLines = lines
+	if f.terminalOutErr != nil {
+		return "", f.terminalOutErr
+	}
+	return f.terminalOutput, nil
 }
 
 func (f *fakeCommander) Spawn(_ context.Context, cfg ports.SpawnConfig) (domain.SessionRecord, error) {
@@ -413,6 +424,23 @@ func (f *fakeCommander) Cleanup(_ context.Context, project domain.ProjectID) (se
 }
 func (f *fakeCommander) RollbackSpawn(context.Context, domain.SessionID) (bool, bool, error) {
 	return false, false, nil
+}
+
+// TestGetTerminalOutputForwardsToManager: the service delegates capture to the
+// manager and maps a wrapped sentinel error to its API equivalent.
+func TestGetTerminalOutputForwardsToManager(t *testing.T) {
+	fc := &fakeCommander{terminalOutput: "line1\nline2\n"}
+	svc := &Service{manager: fc}
+	out, err := svc.GetTerminalOutput(context.Background(), "mer-1", 123)
+	if err != nil {
+		t.Fatalf("GetTerminalOutput: %v", err)
+	}
+	if out != "line1\nline2\n" {
+		t.Fatalf("output = %q, want %q", out, "line1\nline2\n")
+	}
+	if fc.terminalOutLines != 123 {
+		t.Fatalf("lines = %d, want 123", fc.terminalOutLines)
+	}
 }
 
 // TestCleanupMapsManagerResult: the service forwards both reclaimed and
