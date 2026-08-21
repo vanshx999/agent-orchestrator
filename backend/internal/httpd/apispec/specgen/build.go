@@ -690,7 +690,7 @@ func reviewOperations() []operation {
 }
 
 type eventsQuery struct {
-	After *int64 `query:"after,omitempty" minimum:"0" description:"Replay events with seq greater than this cursor. When omitted, clients may send Last-Event-ID instead."`
+	After *int64 `query:"after,omitempty" minimum:"0" description:"Replay events with seq greater than this cursor. When omitted, clients may send Last-Event-ID instead. Cursors that are missing, beyond the head, or more than a bounded catch-up window behind it snap to the current head (the stream is an invalidation feed; clients refetch state on connect); the effective start cursor is returned in X-AO-Event-After."`
 }
 
 func eventOperations() []operation {

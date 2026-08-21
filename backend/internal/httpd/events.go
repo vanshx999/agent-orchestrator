@@ -18,6 +18,13 @@ import (
 const (
 	eventsReplayBatch = 512
 	eventsLiveBuffer  = 1024
+	eventAfterHeader  = "X-AO-Event-After"
+	// maxReplayGap bounds durable catch-up: a cursor further than this many
+	// events behind the head snaps forward to the head instead of replaying.
+	// Genuine small-gap resumes (EventSource auto-reconnect Last-Event-ID) stay
+	// well under it; anything deeper means the client was gone far too long to
+	// meaningfully replay and will refetch state anyway.
+	maxReplayGap = 10_000
 )
 
 type cdcSubscriber interface {
@@ -49,6 +56,22 @@ func (c *EventsController) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	latestSeq, err := c.Source.LatestSeq(r.Context())
+	if err != nil {
+		envelope.WriteAPIError(w, r, http.StatusInternalServerError, "internal", "EVENT_CURSOR_FAILED",
+			"Could not inspect the event cursor", nil)
+		return
+	}
+	// The log is an invalidation feed: clients refetch state on connect (the
+	// renderer invalidates its queries in onopen), so a missing, stale, or
+	// deep-gap cursor must never trigger a whole-log replay. Snap those to the
+	// head; only genuine small-gap resumes replay durable history. Unbounded
+	// replay here re-marshaled the entire change_log on every cursor-less UI
+	// reconnect and starved the writer under GC/mutex load (#3963).
+	if after > latestSeq || latestSeq-after > maxReplayGap {
+		after = latestSeq
+	}
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		envelope.WriteAPIError(w, r, http.StatusInternalServerError, "internal", "SSE_UNSUPPORTED",
@@ -76,6 +99,9 @@ func (c *EventsController) stream(w http.ResponseWriter, r *http.Request) {
 	h.Set("Cache-Control", "no-cache")
 	h.Set("Connection", "keep-alive")
 	h.Set("X-Accel-Buffering", "no")
+	// Advertise the effective start cursor so clients can detect a snap (their
+	// Last-Event-ID was too stale to replay) and refetch instead of waiting.
+	h.Set(eventAfterHeader, strconv.FormatInt(after, 10))
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 

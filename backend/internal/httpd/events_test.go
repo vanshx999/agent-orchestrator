@@ -223,7 +223,9 @@ func (s *lastEventIDSource) EventsAfter(_ context.Context, after int64, _ int) (
 	return []cdc.Event{testCDCEvent(after + 1)}, nil
 }
 
-func (*lastEventIDSource) LatestSeq(context.Context) (int64, error) { return 0, nil }
+// LatestSeq reports a realistic head above the served events so the small-gap
+// resume path under test is not short-circuited by the stale-cursor snap.
+func (*lastEventIDSource) LatestSeq(context.Context) (int64, error) { return 100, nil }
 
 // TestEventsStreamParsesLastEventIDHeader verifies that the Last-Event-ID
 // request header is used as the replay cursor when the after query param is
@@ -269,5 +271,119 @@ func testCDCEvent(seq int64) cdc.Event {
 		Type:      cdc.EventSessionUpdated,
 		Payload:   json.RawMessage(`{"status":"running"}`),
 		CreatedAt: time.Unix(seq, 0).UTC(),
+	}
+}
+
+// snapCursorSource records the replay cursor it was called with and serves a
+// single event at that cursor+1, so a test asserts the effective cursor by the
+// seq the client receives. head simulates the durable log's MAX(seq).
+type snapCursorSource struct {
+	live      *fakeEventSubscriber
+	head      int64
+	gotCursor int64
+}
+
+func (s *snapCursorSource) EventsAfter(_ context.Context, after int64, _ int) ([]cdc.Event, error) {
+	s.gotCursor = after
+	return []cdc.Event{testCDCEvent(after + 1)}, nil
+}
+
+func (s *snapCursorSource) LatestSeq(context.Context) (int64, error) { return s.head, nil }
+
+// getEventStream opens /api/v1/events against a fresh test server and returns
+// the response with its body still open (closed via t.Cleanup). mutate may set
+// headers or assert on the request before it is sent.
+func getEventStream(t *testing.T, src cdc.Source, live *fakeEventSubscriber, mutate func(*http.Request)) *http.Response {
+	t.Helper()
+	router := NewRouterWithControl(config.Config{}, discardLogger(), nil, APIDeps{
+		CDC:    src,
+		Events: live,
+	}, ControlDeps{})
+	ts := httptest.NewServer(router)
+	t.Cleanup(ts.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	t.Cleanup(cancel)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/v1/events", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if mutate != nil {
+		mutate(req)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/v1/events: %v", err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
+}
+
+// TestEventsStreamSnapsUnpositionedCursorToHead is the #3963 regression guard:
+// a fresh connect with no cursor at all must start at the head, never replay
+// the whole change_log. The renderer refetches state in onopen anyway.
+func TestEventsStreamSnapsUnpositionedCursorToHead(t *testing.T) {
+	live := &fakeEventSubscriber{}
+	src := &snapCursorSource{live: live, head: 30_000}
+
+	resp := getEventStream(t, src, live, nil)
+
+	if got, want := resp.Header.Get(eventAfterHeader), "30000"; got != want {
+		t.Fatalf("X-AO-Event-After = %q, want %q", got, want)
+	}
+	ids := readSSEIDs(t, resp.Body, 1)
+	if got, want := ids[0], "30001"; got != want {
+		t.Fatalf("id = %q, want %q (cursor-less connect replayed history instead of snapping to head)", got, want)
+	}
+}
+
+// TestEventsStreamSnapsFutureCursorToHead verifies that a cursor beyond the
+// head snaps to the head rather than resetting to a full-history replay.
+func TestEventsStreamSnapsFutureCursorToHead(t *testing.T) {
+	live := &fakeEventSubscriber{}
+	src := &snapCursorSource{live: live, head: 50}
+
+	resp := getEventStream(t, src, live, func(req *http.Request) {
+		req.URL.RawQuery = "after=999"
+	})
+
+	if got, want := resp.Header.Get(eventAfterHeader), "50"; got != want {
+		t.Fatalf("X-AO-Event-After = %q, want %q", got, want)
+	}
+	ids := readSSEIDs(t, resp.Body, 1)
+	if got, want := ids[0], "51"; got != want {
+		t.Fatalf("id = %q, want %q (future cursor did not snap to head)", got, want)
+	}
+}
+
+// TestEventsStreamSnapsDeepGapToHead verifies that a cursor far behind the
+// head (> maxReplayGap events) snaps forward instead of streaming the gap.
+func TestEventsStreamSnapsDeepGapToHead(t *testing.T) {
+	live := &fakeEventSubscriber{}
+	src := &snapCursorSource{live: live, head: 20_000}
+
+	resp := getEventStream(t, src, live, func(req *http.Request) {
+		req.URL.RawQuery = "after=5"
+	})
+
+	ids := readSSEIDs(t, resp.Body, 1)
+	if got, want := ids[0], "20001"; got != want {
+		t.Fatalf("id = %q, want %q (deep-gap cursor was replayed instead of snapped)", got, want)
+	}
+}
+
+// TestEventsStreamReplaysSmallGap verifies that genuine small-gap resumes —
+// the EventSource auto-reconnect path — still replay durable history.
+func TestEventsStreamReplaysSmallGap(t *testing.T) {
+	live := &fakeEventSubscriber{}
+	src := &snapCursorSource{live: live, head: 20}
+
+	resp := getEventStream(t, src, live, func(req *http.Request) {
+		req.URL.RawQuery = "after=10"
+	})
+
+	ids := readSSEIDs(t, resp.Body, 1)
+	if got, want := ids[0], "11"; got != want {
+		t.Fatalf("id = %q, want %q (small-gap resume did not replay from the cursor)", got, want)
 	}
 }
