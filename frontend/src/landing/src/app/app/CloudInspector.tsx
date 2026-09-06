@@ -855,7 +855,10 @@ function BrowserView({
             key={`${previewURL}-${reloadKey}`}
             title="Worker preview"
             src={previewURL}
-            sandbox="allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
+            // Deliberately omit allow-same-origin. Preview code is project
+            // controlled and must run in an opaque origin so it cannot read
+            // the parent app's localStorage bearer session.
+            sandbox="allow-forms allow-modals allow-popups allow-scripts"
             className="h-full w-full border-0 bg-white"
           />
         )}

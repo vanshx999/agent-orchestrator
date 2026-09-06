@@ -118,6 +118,12 @@ it("switches between changes, files, and a capability-scoped browser preview", a
       "https://cloud.example/api/cloud/v1/preview/file-token/",
     ),
   );
+	const preview = screen.getByTitle("Worker preview");
+	expect(preview).toHaveAttribute(
+		"sandbox",
+		"allow-forms allow-modals allow-popups allow-scripts",
+	);
+	expect(preview.getAttribute("sandbox")).not.toContain("allow-same-origin");
   expect(api.workspaceFilePreviewTicket).toHaveBeenCalledWith(
     "org-one",
     "session-one",
