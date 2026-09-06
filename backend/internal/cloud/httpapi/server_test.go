@@ -32,6 +32,27 @@ func TestProjectShareRoles(t *testing.T) {
 	}
 }
 
+func TestSharedProjectAccessKeepsSessionScopeAndLeastPrivilege(t *testing.T) {
+	access := sharedProjectAccess{
+		ProjectIDs: map[clouddomain.ProjectID]struct{}{"project": {}},
+		Grants: map[clouddomain.ProjectID]map[clouddomain.SessionID]string{
+			"project": {
+				"":          "viewer",
+				"session-a": "editor",
+			},
+		},
+	}
+	if role, ok := access.roleFor("project", "session-a"); !ok || role != "editor" {
+		t.Fatalf("session A role = (%q, %t), want (editor, true)", role, ok)
+	}
+	if role, ok := access.roleFor("project", "session-b"); !ok || role != "viewer" {
+		t.Fatalf("session B role = (%q, %t), want (viewer, true)", role, ok)
+	}
+	if _, ok := access.roleFor("other-project", "session-a"); ok {
+		t.Fatal("grant for session A leaked to another project")
+	}
+}
+
 func TestSharedProjectRequestScope(t *testing.T) {
 	orgID := clouddomain.OrgID("org-one")
 	for _, test := range []struct {

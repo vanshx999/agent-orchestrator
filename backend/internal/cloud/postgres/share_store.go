@@ -74,12 +74,13 @@ type ProjectShareAccess struct {
 
 // ProjectShareGrant is an active redeemed share for one user.
 type ProjectShareGrant struct {
-	ID         string           `json:"id"`
-	User       clouddomain.User `json:"user"`
-	Role       string           `json:"role"`
-	Status     string           `json:"status"`
-	RedeemedAt time.Time        `json:"redeemedAt"`
-	UpdatedAt  time.Time        `json:"updatedAt"`
+	ID         string                `json:"id"`
+	User       clouddomain.User      `json:"user"`
+	SessionID  clouddomain.SessionID `json:"sessionId,omitempty"`
+	Role       string                `json:"role"`
+	Status     string                `json:"status"`
+	RedeemedAt time.Time             `json:"redeemedAt"`
+	UpdatedAt  time.Time             `json:"updatedAt"`
 }
 
 // CreateProjectShareLink stores a scoped share link.
@@ -268,8 +269,7 @@ func (s *Store) RedeemProjectShareLink(
 			share_link_id, org_id, project_id, session_id, user_id, shared_by_user_id, role
 		)
 		VALUES ($1, $2, $3, NULLIF($4, '')::uuid, $5, $6, $7)
-		ON CONFLICT (user_id, org_id, project_id) WHERE status = 'active'
-		DO UPDATE SET
+		ON CONFLICT DO UPDATE SET
 			share_link_id = EXCLUDED.share_link_id,
 			session_id = EXCLUDED.session_id,
 			shared_by_user_id = EXCLUDED.shared_by_user_id,
@@ -388,6 +388,7 @@ func (s *Store) ListProjectShareAccess(
 			share_grant.id,
 			user_row.id, user_row.auth_provider, user_row.external_user_id, user_row.email,
 			user_row.display_name, user_row.avatar_url, user_row.created_at, user_row.updated_at,
+			COALESCE(share_grant.session_id::text, ''),
 			share_grant.role, share_grant.status, share_grant.redeemed_at, share_grant.updated_at
 		FROM ao_project_share_grants share_grant
 		JOIN ao_users user_row ON user_row.id = share_grant.user_id
@@ -412,6 +413,7 @@ func (s *Store) ListProjectShareAccess(
 			&grant.User.AvatarURL,
 			&grant.User.CreatedAt,
 			&grant.User.UpdatedAt,
+			&grant.SessionID,
 			&grant.Role,
 			&grant.Status,
 			&grant.RedeemedAt,
