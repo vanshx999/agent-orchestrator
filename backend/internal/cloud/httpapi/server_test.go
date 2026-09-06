@@ -53,6 +53,22 @@ func TestSharedProjectAccessKeepsSessionScopeAndLeastPrivilege(t *testing.T) {
 	}
 }
 
+func TestTerminalSocketValidationPrecedesTicketConsumption(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/api/cloud/v1/terminal?kind=agent&after=not-a-number", nil)
+	if _, err := parseAfter(request); err == nil {
+		t.Fatal("invalid after value was accepted")
+	}
+	// terminalSocket performs this validation before calling ConsumeAccessTicket;
+	// keeping the check here table-driven protects the ordering contract without
+	// requiring a live Postgres ticket store or WebSocket peer.
+	for _, raw := range []string{"-1", "abc"} {
+		request := httptest.NewRequest(http.MethodGet, "/api/cloud/v1/terminal?kind=agent&after="+raw, nil)
+		if _, err := parseAfter(request); err == nil {
+			t.Fatalf("after=%q was accepted", raw)
+		}
+	}
+}
+
 func TestSharedProjectRequestScope(t *testing.T) {
 	orgID := clouddomain.OrgID("org-one")
 	for _, test := range []struct {

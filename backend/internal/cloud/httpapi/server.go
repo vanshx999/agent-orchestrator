@@ -3806,20 +3806,6 @@ func (s *Server) terminalSocket(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusBadRequest, "INVALID_TERMINAL_KIND", "terminal kind must be agent or workspace.")
 		return
 	}
-	ticket, err := s.store.ConsumeAccessTicket(
-		r.Context(),
-		r.URL.Query().Get("ticket"),
-		terminalTicketPurpose(kind),
-	)
-	if errors.Is(err, cloudpostgres.ErrInvalidTicket) {
-		writeError(w, r, http.StatusUnauthorized, "INVALID_TERMINAL_TICKET", "Terminal ticket is invalid or expired.")
-		return
-	}
-	if err != nil {
-		s.internalError(w, r, "consume terminal ticket", err)
-		return
-	}
-	canOperateTerminal := ticketHasScope(ticket.Scopes, "terminal:operate")
 	after, err := parseAfter(r)
 	if err != nil {
 		writeError(w, r, http.StatusBadRequest, "INVALID_AFTER", "after must be a non-negative integer.")
@@ -3833,6 +3819,23 @@ func (s *Server) terminalSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = socket.Close(websocket.StatusNormalClosure, "terminal closed") }()
+	// Do not consume the one-use ticket until parseAfter and websocket.Accept
+	// have both succeeded. Otherwise a malformed/rejected connection can burn
+	// a valid ticket before the client has established a terminal stream.
+	ticket, err := s.store.ConsumeAccessTicket(
+		r.Context(),
+		r.URL.Query().Get("ticket"),
+		terminalTicketPurpose(kind),
+	)
+	if errors.Is(err, cloudpostgres.ErrInvalidTicket) {
+		_ = socket.Close(websocket.StatusPolicyViolation, "invalid terminal ticket")
+		return
+	}
+	if err != nil {
+		_ = socket.Close(websocket.StatusInternalError, "terminal ticket lookup failed")
+		return
+	}
+	canOperateTerminal := ticketHasScope(ticket.Scopes, "terminal:operate")
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	live := make(chan clouddomain.Event, 1024)
