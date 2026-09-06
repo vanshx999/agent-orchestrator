@@ -146,25 +146,27 @@ func (r *Runner) previewWorkspaceFile(input workspaceRequest) (map[string]any, e
 	if method != http.MethodGet && method != http.MethodHead {
 		return nil, errors.New("file preview only supports GET and HEAD")
 	}
-	fullPath, _, err := r.resolveWorkspacePath(input.Path)
+	fullPath, relativePath, err := r.resolvePreviewWorkspacePath(input.Path)
 	if err != nil {
 		return nil, err
 	}
 	info, err := os.Stat(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return map[string]any{
-				"status":      http.StatusNotFound,
-				"contentType": "text/plain; charset=utf-8",
-				"body":        base64.StdEncoding.EncodeToString([]byte("File not found.")),
-			}, nil
+			return previewFileNotFound(), nil
 		}
 		return nil, fmt.Errorf("stat preview file: %w", err)
 	}
 	if info.IsDir() {
-		fullPath = filepath.Join(fullPath, "index.html")
+		fullPath, _, err = r.resolvePreviewWorkspacePath(filepath.Join(relativePath, "index.html"))
+		if err != nil {
+			return nil, err
+		}
 		info, err = os.Stat(fullPath)
 		if err != nil {
+			if os.IsNotExist(err) {
+				return previewFileNotFound(), nil
+			}
 			return nil, fmt.Errorf("open directory preview index: %w", err)
 		}
 	}
@@ -173,6 +175,9 @@ func (r *Runner) previewWorkspaceFile(input workspaceRequest) (map[string]any, e
 	}
 	body, err := os.ReadFile(fullPath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return previewFileNotFound(), nil
+		}
 		return nil, fmt.Errorf("read preview file: %w", err)
 	}
 	contentType := mime.TypeByExtension(strings.ToLower(filepath.Ext(fullPath)))
@@ -184,6 +189,14 @@ func (r *Runner) previewWorkspaceFile(input workspaceRequest) (map[string]any, e
 		"contentType": contentType,
 		"body":        base64.StdEncoding.EncodeToString(body),
 	}, nil
+}
+
+func previewFileNotFound() map[string]any {
+	return map[string]any{
+		"status":      http.StatusNotFound,
+		"contentType": "text/plain; charset=utf-8",
+		"body":        base64.StdEncoding.EncodeToString([]byte("File not found.")),
+	}
 }
 
 func (r *Runner) listWorkspace(path string) (map[string]any, error) {
@@ -590,6 +603,57 @@ func (r *Runner) resolveWorkspacePath(path string) (string, string, error) {
 		return "", "", errors.New("workspace path escapes the repository")
 	}
 	return resolved, filepath.ToSlash(relativeResolved), nil
+}
+
+func (r *Runner) resolvePreviewWorkspacePath(path string) (string, string, error) {
+	relativePath := filepath.Clean(strings.TrimPrefix(strings.TrimSpace(path), "/"))
+	if relativePath == "." {
+		relativePath = ""
+	}
+	fullPath := filepath.Join(r.workspaceDir, relativePath)
+	workspaceResolved, err := filepath.EvalSymlinks(r.workspaceDir)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve workspace root: %w", err)
+	}
+
+	missingParts := make([]string, 0, 2)
+	probe := fullPath
+	for {
+		resolved, resolveErr := filepath.EvalSymlinks(probe)
+		if resolveErr == nil {
+			relativeResolved, relErr := filepath.Rel(workspaceResolved, resolved)
+			if relErr != nil || relativeResolved == ".." ||
+				strings.HasPrefix(relativeResolved, ".."+string(os.PathSeparator)) {
+				return "", "", errors.New("workspace path escapes the repository")
+			}
+			for index := len(missingParts) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, missingParts[index])
+			}
+			relativeResolved, relErr = filepath.Rel(workspaceResolved, resolved)
+			if relErr != nil || relativeResolved == ".." ||
+				strings.HasPrefix(relativeResolved, ".."+string(os.PathSeparator)) {
+				return "", "", errors.New("workspace path escapes the repository")
+			}
+			return resolved, filepath.ToSlash(relativeResolved), nil
+		}
+
+		var pathInfo os.FileInfo
+		if lstatInfo, lstatErr := os.Lstat(probe); lstatErr == nil {
+			pathInfo = lstatInfo
+		} else if !os.IsNotExist(lstatErr) {
+			return "", "", fmt.Errorf("resolve workspace path: %w", lstatErr)
+		}
+		if pathInfo != nil {
+			return "", "", fmt.Errorf("resolve workspace path: %w", resolveErr)
+		}
+
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			return "", "", fmt.Errorf("resolve workspace path: %w", resolveErr)
+		}
+		missingParts = append(missingParts, filepath.Base(probe))
+		probe = parent
+	}
 }
 
 func limitedCommandOutput(
